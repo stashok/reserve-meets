@@ -15,6 +15,7 @@ export default defineConfig({
       input: {
         sidepanel: resolve(root, "src/ui/sidepanel/index.html"),
         options: resolve(root, "src/ui/options/index.html"),
+        popup: resolve(root, "src/ui/popup/index.html"),
         background: resolve(root, "src/background/index.ts"),
       },
       output: {

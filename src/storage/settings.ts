@@ -1,4 +1,5 @@
 import { DEFAULT_SETTINGS, type Settings } from "../shared/models";
+import { createRoomNamespace } from "../providers/jitsi";
 
 const SETTINGS_KEY = "settings";
 const LEGACY_ADMIN_HEADER = "Резервные подключения на урок:";
@@ -31,6 +32,10 @@ export async function loadSettings(): Promise<Settings> {
   }
   if (!settings.profileUrlTemplate.trim()) {
     settings.profileUrlTemplate = DEFAULT_SETTINGS.profileUrlTemplate;
+  }
+  if (!settings.roomNamespace) {
+    settings.roomNamespace = createRoomNamespace();
+    await chrome.storage.local.set({ [SETTINGS_KEY]: settings });
   }
   return settings;
 }

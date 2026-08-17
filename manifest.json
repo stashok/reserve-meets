@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Reserve Meet",
-  "version": "0.2.0",
+  "version": "0.3.2",
   "description": "Резервные Jitsi-комнаты для учеников прямо со страницы урока",
   "icons": {
     "16": "icons/icon16.png",
@@ -11,6 +11,7 @@
   },
   "action": {
     "default_title": "Reserve Meet",
+    "default_popup": "src/ui/popup/index.html",
     "default_icon": {
       "16": "icons/icon16.png",
       "32": "icons/icon32.png"
@@ -26,19 +27,5 @@
   "options_page": "src/ui/options/index.html",
   "permissions": ["storage", "tabs", "scripting", "sidePanel", "clipboardWrite", "webNavigation"],
   "host_permissions": ["http://*/*", "https://*/*"],
-  "commands": {
-    "_execute_action": {
-      "suggested_key": {
-        "default": "Alt+Shift+R"
-      },
-      "description": "Открыть Reserve Meet и прочитать список учеников"
-    },
-    "refresh_participants": {
-      "suggested_key": {
-        "default": "Alt+Shift+U"
-      },
-      "description": "Обновить список учеников"
-    }
-  },
   "minimum_chrome_version": "116"
 }

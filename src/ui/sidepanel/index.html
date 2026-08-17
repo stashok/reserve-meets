@@ -11,34 +11,20 @@
         <button class="btn ghost" id="refresh" type="button">Обновить</button>
       </header>
 
-      <div id="status" class="status muted">Ищу участников на странице урока…</div>
-
-      <section>
-        <h2>Участники</h2>
-        <div id="participants" class="list"></div>
-      </section>
+      <p id="status" class="status"></p>
+      <div id="participants" class="list"></div>
 
       <form class="manual" id="manual-form">
-        <input id="manual-name" type="text" placeholder="Добавить имя вручную" autocomplete="off" />
+        <input id="manual-name" type="text" placeholder="Добавить имя" autocomplete="off" />
         <button class="btn" type="submit">Добавить</button>
       </form>
 
       <div class="actions">
-        <button class="btn primary" id="create" type="button" disabled>
-          Создать резервные подключения
-        </button>
+        <button class="btn primary" id="create" type="button" disabled>Создать комнаты</button>
+        <button class="btn ghost" id="copy-admin" type="button" hidden>Скопировать всех в Slack</button>
       </div>
 
-      <section id="results-section" hidden>
-        <div class="bar">
-          <h2>Ссылки</h2>
-          <button class="btn" id="copy-admin" type="button">Скопировать всё для Slack</button>
-        </div>
-        <div id="results" class="list"></div>
-      </section>
-
       <footer class="bar">
-        <span>Jitsi · Alt+Shift+R</span>
         <a id="open-options" href="#">Настройки</a>
       </footer>
     </div>

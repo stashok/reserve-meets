@@ -12,31 +12,11 @@ import { buildStudentMessage } from "../templates/render";
 import { activeMeetingTabIds, focusTab, openMeetingTabs, orderTabs, syncMeetingTabs, tabStillOpen, tabsThatWillClose } from "./tabs";
 
 chrome.runtime.onInstalled.addListener(() => {
-  void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+  void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false }).catch(() => undefined);
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
-});
-
-chrome.action.onClicked.addListener((tab) => {
-  void (async () => {
-    if (tab.windowId !== undefined) {
-      await chrome.sidePanel.open({ windowId: tab.windowId });
-    }
-    if (tab.id !== undefined) {
-      await extractFromTab(tab.id);
-    }
-    notifyUi();
-  })();
-});
-
-chrome.commands.onCommand.addListener((command) => {
-  if (command !== "refresh_participants") return;
-  void (async () => {
-    await extractFromTab();
-    notifyUi();
-  })();
+  void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false }).catch(() => undefined);
 });
 
 chrome.runtime.onMessage.addListener((message: ExtensionRequest, sender, sendResponse) => {
@@ -80,7 +60,7 @@ async function handleMessage(
     case "CREATE":
       return createReservations(message.confirmClose === true);
     case "OPEN_TAB":
-      return openParticipantTab(message.localId);
+      return openParticipantTab(message.localId, message.userId);
     case "GET_SETTINGS": {
       const settings = await loadSettings();
       return { type: "SETTINGS", settings };
@@ -93,16 +73,48 @@ async function handleMessage(
     case "SET_OVERLAY_COLLAPSED":
       await setOverlayCollapsed(sender.tab?.id, message.collapsed);
       return overlayForTab(sender.tab?.id);
+    case "GET_MENU_STATE":
+      return menuState();
+    case "OPEN_PANEL":
+      return openPanelFromMenu();
+    case "SET_OVERLAY_HIDDEN":
+      await setOverlayHidden(message.tabId ?? sender.tab?.id, message.hidden);
+      return overlayForTab(message.tabId ?? sender.tab?.id);
     default:
       return { type: "ERROR", message: "Неизвестный запрос" };
   }
 }
 
 async function stateResponse(): Promise<ExtensionResponse> {
-  const session = await loadSession();
+  const session = await reconcileSession(await loadSession());
   const extractError = await loadExtractError();
   const rememberedUrls = session ? (await loadLinkMemory(session.pageUrl)).urls : {};
   return { type: "STATE", session, extractError, rememberedUrls };
+}
+
+async function reconcileSession(session: Session | null): Promise<Session | null> {
+  if (!session) return null;
+  let changed = false;
+  const reservations = [];
+  for (const item of session.reservations) {
+    if (item.tabId == null) {
+      reservations.push(item);
+      continue;
+    }
+    const tab = await tabStillOpen(item.tabId);
+    if (tab?.id) {
+      const windowId = tab.windowId ?? item.windowId;
+      if (windowId !== item.windowId) changed = true;
+      reservations.push({ ...item, windowId });
+    } else {
+      changed = true;
+      reservations.push({ ...item, tabId: null, windowId: null });
+    }
+  }
+  if (!changed) return session;
+  const next = { ...session, reservations };
+  await saveSession(next);
+  return next;
 }
 
 async function activeTabId(): Promise<number | undefined> {
@@ -228,13 +240,23 @@ async function extractFromTab(tabId?: number): Promise<void> {
       previous?.participants.map((item) => [item.userId ?? item.localId, item.selected]),
     );
 
+    const previousByUser = new Map(
+      (previous?.participants ?? [])
+        .filter((item) => item.userId)
+        .map((item) => [item.userId as string, item]),
+    );
+
     const settings = await loadSettings();
     const pageUrl = tab.url ?? previous?.pageUrl ?? "";
     const participants = withDisplayNames([
-      ...detected.map((item) => ({
-        ...item,
-        selected: item.userId ? (selectedMap.get(item.userId) ?? true) : true,
-      })),
+      ...detected.map((item) => {
+        const remembered = item.userId ? previousByUser.get(item.userId) : undefined;
+        return {
+          ...item,
+          localId: remembered?.localId ?? item.localId,
+          selected: item.userId ? (selectedMap.get(item.userId) ?? true) : true,
+        };
+      }),
       ...(previous?.participants
         .filter((item) => item.source === "manual")
         .map((item) => ({
@@ -270,6 +292,25 @@ async function extractFromTab(tabId?: number): Promise<void> {
           ])
         : (previous?.staleTabIds ?? []);
 
+    const reservations = lessonChanged
+      ? []
+      : (previous?.reservations ?? []).map((reservation) => {
+          const match = sorted.find(
+            (item) =>
+              (reservation.userId && item.userId === reservation.userId) ||
+              item.localId === reservation.participantLocalId,
+          );
+          return match
+            ? {
+                ...reservation,
+                participantLocalId: match.localId,
+                listName: match.listName,
+                greetingName: match.greetingName,
+                userId: match.userId,
+              }
+            : reservation;
+        });
+
     const session: Session = {
       id: previous?.id ?? crypto.randomUUID(),
       createdAt: previous?.createdAt ?? new Date().toISOString(),
@@ -277,7 +318,7 @@ async function extractFromTab(tabId?: number): Promise<void> {
       pageTitle: tab.title ?? previous?.pageTitle ?? "",
       lessonTabId: tab.id,
       participants: sorted,
-      reservations: lessonChanged ? [] : (previous?.reservations ?? []),
+      reservations,
       staleTabIds,
     };
 
@@ -354,9 +395,9 @@ async function createReservations(confirmClose: boolean): Promise<ExtensionRespo
     try {
       let joinUrl = memory.urls[key];
       if (!joinUrl) {
-        joinUrl = buildJitsiUrl(settings.jitsiBaseUrl);
+        joinUrl = buildJitsiUrl(settings.jitsiBaseUrl, settings.roomNamespace);
         while (usedUrls.has(joinUrl)) {
-          joinUrl = buildJitsiUrl(settings.jitsiBaseUrl);
+          joinUrl = buildJitsiUrl(settings.jitsiBaseUrl, settings.roomNamespace);
         }
         usedUrls.add(joinUrl);
       }
@@ -417,27 +458,26 @@ async function createReservations(confirmClose: boolean): Promise<ExtensionRespo
   return stateResponse();
 }
 
-async function openParticipantTab(localId: string): Promise<ExtensionResponse> {
-  const session = await loadSession();
+async function openParticipantTab(
+  localId: string,
+  userId?: string | null,
+): Promise<ExtensionResponse> {
+  const session = await reconcileSession(await loadSession());
   if (!session) return { type: "ERROR", message: "Сначала откройте страницу урока" };
 
-  const participant = session.participants.find((item) => item.localId === localId);
-  if (!participant) return { type: "ERROR", message: "Участник не найден" };
+  const participant =
+    session.participants.find((item) => item.localId === localId) ??
+    session.participants.find((item) => userId && item.userId === userId) ??
+    session.participants.find((item) => {
+      const reservation = session.reservations.find((row) => row.participantLocalId === localId);
+      return Boolean(reservation?.userId && item.userId === reservation.userId);
+    });
 
-  const settings = await loadSettings();
-  const memory = await loadLinkMemory(session.pageUrl);
-  const key = memoryKeyFor(participant.userId, participant.localId);
-  const usedUrls = new Set(Object.values(memory.urls));
-  let joinUrl = memory.urls[key];
-  if (!joinUrl) {
-    joinUrl = buildJitsiUrl(settings.jitsiBaseUrl);
-    while (usedUrls.has(joinUrl)) {
-      joinUrl = buildJitsiUrl(settings.jitsiBaseUrl);
-    }
-    await rememberJoinUrls(session.pageUrl, { [key]: joinUrl });
-  }
+  const existing =
+    (participant ? matchReservation(session.reservations, participant) : undefined) ??
+    session.reservations.find((item) => item.participantLocalId === localId) ??
+    session.reservations.find((item) => userId && item.userId === userId);
 
-  const existing = matchReservation(session.reservations, participant);
   if (existing?.tabId) {
     const live = await tabStillOpen(existing.tabId);
     if (live?.id) {
@@ -446,19 +486,35 @@ async function openParticipantTab(localId: string): Promise<ExtensionResponse> {
     }
   }
 
+  const settings = await loadSettings();
+  const memory = await loadLinkMemory(session.pageUrl);
+  const key = memoryKeyFor(
+    participant?.userId ?? existing?.userId ?? userId ?? null,
+    participant?.localId ?? localId,
+  );
+  const usedUrls = new Set(Object.values(memory.urls));
+  let joinUrl = existing?.joinUrl || memory.urls[key];
+  if (!joinUrl) {
+    joinUrl = buildJitsiUrl(settings.jitsiBaseUrl, settings.roomNamespace);
+    while (usedUrls.has(joinUrl)) {
+      joinUrl = buildJitsiUrl(settings.jitsiBaseUrl, settings.roomNamespace);
+    }
+    await rememberJoinUrls(session.pageUrl, { [key]: joinUrl });
+  }
+
   const pending: Reservation = {
-    participantLocalId: participant.localId,
-    listName: participant.listName,
-    greetingName: participant.greetingName,
-    userId: participant.userId,
+    participantLocalId: participant?.localId ?? existing?.participantLocalId ?? localId,
+    listName: participant?.listName ?? existing?.listName ?? "Ученик",
+    greetingName: participant?.greetingName ?? existing?.greetingName ?? "Ученик",
+    userId: participant?.userId ?? existing?.userId ?? userId ?? null,
     joinUrl,
     profileUrl: resolveProfileUrl({
-      userId: participant.userId,
-      scrapedUrl: participant.profileUrl,
+      userId: participant?.userId ?? existing?.userId ?? userId ?? null,
+      scrapedUrl: participant?.profileUrl ?? existing?.profileUrl ?? "",
       pageUrl: session.pageUrl,
       template: settings.profileUrlTemplate,
     }),
-    duration: participant.duration,
+    duration: participant?.duration ?? existing?.duration ?? null,
     tabId: null,
     windowId: null,
     status: "ready",
@@ -525,6 +581,28 @@ function uniqueNumbers(values: Array<number | null | undefined>): number[] {
   return [...new Set(values.filter((id): id is number => typeof id === "number"))];
 }
 
+async function openPanelFromMenu(): Promise<ExtensionResponse> {
+  const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  await extractFromTab(active?.id);
+  notifyUi();
+  return stateResponse();
+}
+
+async function menuState(): Promise<ExtensionResponse> {
+  const session = await reconcileSession(await loadSession());
+  const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  const meeting = session?.reservations.find((item) => item.tabId === active?.id && item.status === "ready");
+  const hidden = active?.id != null ? await isOverlayHidden(active.id) : false;
+  return {
+    type: "MENU_STATE",
+    lessonTabId: session?.lessonTabId ?? null,
+    activeTabId: active?.id ?? null,
+    meeting: meeting?.tabId
+      ? { tabId: meeting.tabId, name: meeting.listName, hidden }
+      : null,
+  };
+}
+
 async function overlayForTab(tabId: number | undefined): Promise<ExtensionResponse> {
   if (tabId === undefined) return { type: "ERROR", message: "Нет вкладки" };
   const session = await loadSession();
@@ -534,7 +612,8 @@ async function overlayForTab(tabId: number | undefined): Promise<ExtensionRespon
   }
   const settings = await loadSettings();
   const collapsedKey = overlayCollapsedKey(tabId);
-  const stored = await chrome.storage.session.get(collapsedKey);
+  const hiddenKey = overlayHiddenKey(tabId);
+  const stored = await chrome.storage.session.get([collapsedKey, hiddenKey]);
   const slack = buildSlackClipboard([
     {
       name: reservation.listName,
@@ -547,6 +626,7 @@ async function overlayForTab(tabId: number | undefined): Promise<ExtensionRespon
     tabId,
     tabTitle: reservation.listName,
     collapsed: Boolean(stored[collapsedKey]),
+    hidden: Boolean(stored[hiddenKey]),
     studentText: buildStudentMessage(
       settings.studentTemplate,
       reservation.greetingName,
@@ -562,9 +642,29 @@ function overlayCollapsedKey(tabId: number): string {
   return `overlayCollapsed:${tabId}`;
 }
 
+function overlayHiddenKey(tabId: number): string {
+  return `overlayHidden:${tabId}`;
+}
+
+async function isOverlayHidden(tabId: number): Promise<boolean> {
+  const key = overlayHiddenKey(tabId);
+  const stored = await chrome.storage.session.get(key);
+  return Boolean(stored[key]);
+}
+
 async function setOverlayCollapsed(tabId: number | undefined, collapsed: boolean): Promise<void> {
   if (tabId === undefined) return;
   await chrome.storage.session.set({ [overlayCollapsedKey(tabId)]: collapsed });
+}
+
+async function setOverlayHidden(tabId: number | undefined, hidden: boolean): Promise<void> {
+  if (tabId === undefined) return;
+  await chrome.storage.session.set({
+    [overlayHiddenKey(tabId)]: hidden,
+    ...(hidden ? {} : { [overlayCollapsedKey(tabId)]: false }),
+  });
+  await injectMeetingUi(tabId);
+  await chrome.tabs.sendMessage(tabId, { type: "OVERLAY_REFRESH" }).catch(() => undefined);
 }
 
 async function injectMeetingUi(tabId: number): Promise<void> {

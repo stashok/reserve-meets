@@ -18,8 +18,16 @@
     });
   }
 
+  chrome.runtime.onMessage.addListener((message) => {
+    if (message?.type === "OVERLAY_REFRESH") requestPayload();
+  });
+
   function mount(payload) {
     watchTitle(payload.tabTitle);
+    if (payload.hidden) {
+      document.getElementById("reserve-meet-overlay")?.remove();
+      return;
+    }
     renderPanel(payload);
   }
 
@@ -96,8 +104,8 @@
 
     head.append(name, closeBtn);
 
-    const studentBtn = actionButton("Скопировать для ученика");
-    const slackBtn = actionButton("Скопировать для Slack");
+    const studentBtn = actionButton("Ученику");
+    const slackBtn = actionButton("Slack");
     studentBtn.addEventListener("click", () => {
       void copy(payload.studentText, studentBtn);
     });
@@ -173,27 +181,29 @@
         top: 56px;
         left: 12px;
         z-index: 2147483646;
-        background: rgba(27, 29, 36, 0.94);
-        color: #edf0f6;
-        font: 12px/1.35 "Segoe UI", system-ui, sans-serif;
+        background: #f5f5f3;
+        color: #1d1d1f;
+        font: 13px/1.35 system-ui, -apple-system, "Segoe UI", sans-serif;
         box-sizing: border-box;
       }
       .panel {
         display: grid;
         gap: 6px;
         width: 220px;
-        padding: 10px;
-        border-radius: 10px;
+        padding: 12px;
+        border-radius: 12px;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
       }
       .chip {
         max-width: 180px;
-        border: 1px solid #343a48;
+        border: 0;
         border-radius: 999px;
-        padding: 6px 10px;
+        padding: 6px 12px;
         cursor: pointer;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.16);
       }
       .head {
         display: flex;
@@ -202,8 +212,8 @@
         gap: 8px;
       }
       .name {
-        font-weight: 650;
-        font-size: 13px;
+        font-weight: 600;
+        font-size: 14px;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
@@ -214,27 +224,26 @@
         padding: 0;
         border: 0;
         background: transparent;
-        color: #9aa3b5;
+        color: #6e6e73;
         font-size: 18px;
         line-height: 1;
         cursor: pointer;
       }
-      .panel > button, .chip {
-        border: 1px solid #343a48;
-        background: #242833;
-        color: #edf0f6;
-        border-radius: 8px;
-        padding: 7px 8px;
+      .panel > button {
+        border: 0;
+        background: #ffffff;
+        color: #1d1d1f;
+        border-radius: 10px;
+        padding: 8px 10px;
         cursor: pointer;
         text-align: left;
         font: inherit;
       }
-      .chip {
-        border-radius: 999px;
+      .panel > button:hover, .chip:hover {
+        background: #ecece8;
       }
-      button:hover, .chip:hover, .close:hover {
-        border-color: #7ab0ff;
-        color: #edf0f6;
+      .close:hover {
+        color: #1d1d1f;
       }
     `;
     return el;

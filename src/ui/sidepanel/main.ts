@@ -1,16 +1,14 @@
-import { groupByLessonSlot } from "../../participants/duration";
+import { groupByLessonSlot, sortByLessonSlot } from "../../participants/duration";
 import type { ExtensionRequest, ExtensionResponse, UiEvent } from "../../shared/messages";
-import type { Session, Settings } from "../../shared/models";
+import type { LessonSlot, Session, Settings } from "../../shared/models";
 import { DEFAULT_SETTINGS } from "../../shared/models";
 import { memoryKeyFor } from "../../storage/links";
-import { copySlackClipboard, copySlackClipboardFromGroups } from "../../templates/clipboard";
+import { copySlackClipboard } from "../../templates/clipboard";
 import { buildStudentMessage } from "../../templates/render";
 import "../common.css";
 
 const statusEl = must("#status");
 const participantsEl = must("#participants");
-const resultsEl = must("#results");
-const resultsSection = must("#results-section");
 const createBtn = must<HTMLButtonElement>("#create");
 const refreshBtn = must<HTMLButtonElement>("#refresh");
 const copyAdminBtn = must<HTMLButtonElement>("#copy-admin");
@@ -21,11 +19,16 @@ const openOptions = must<HTMLAnchorElement>("#open-options");
 let session: Session | null = null;
 let settings: Settings = DEFAULT_SETTINGS;
 let rememberedUrls: Record<string, string> = {};
+let collapsedGroups = new Set<string>();
+let busy = false;
+
+const COLLAPSED_KEY = "collapsedGroups";
 
 void boot();
 
 async function boot(): Promise<void> {
   settings = await loadSettingsFromWorker();
+  collapsedGroups = await loadCollapsedGroups();
   await refreshState(true);
 
   refreshBtn.addEventListener("click", () => {
@@ -59,38 +62,40 @@ async function boot(): Promise<void> {
 
 async function refreshState(extract: boolean): Promise<void> {
   statusEl.classList.remove("error");
-  if (extract) {
-    statusEl.textContent = "Ищу участников на странице урока…";
-    const extracted = await send({ type: "EXTRACT", tabId: await currentLessonTabId() });
-    applyResponse(extracted);
-  } else {
-    applyResponse(await send({ type: "GET_STATE" }));
-  }
+  applyResponse(await send({ type: "GET_STATE" }));
   render();
+  if (extract) {
+    setStatus("Ищу учеников…");
+    applyResponse(await send({ type: "EXTRACT" }));
+    render();
+  }
 }
 
 async function createReservations(confirmClose = false): Promise<void> {
   settings = await loadSettingsFromWorker();
-  createBtn.disabled = true;
+  busy = true;
   statusEl.classList.remove("error");
-  statusEl.textContent = "Создаю комнаты и открываю вкладки…";
-  const response = await send({ type: "CREATE", confirmClose });
-  if (response.type === "CONFIRM_CLOSE") {
-    const names = response.names.join(", ");
-    const ok = window.confirm(
-      `Вы сейчас в звонке: ${names}. Закрыть эту вкладку и продолжить?`,
-    );
-    if (ok) {
-      applyResponse(await send({ type: "CREATE", confirmClose: true }));
-    } else {
-      createBtn.disabled = false;
-      statusEl.textContent = "Создание отменено: вкладка звонка не закрыта.";
-    }
-    render();
-    return;
-  }
-  applyResponse(response);
+  setStatus("Создаю комнаты…");
   render();
+  try {
+    const response = await send({ type: "CREATE", confirmClose });
+    if (response.type === "CONFIRM_CLOSE") {
+      const names = response.names.join(", ");
+      const ok = window.confirm(
+        `Вы сейчас в звонке: ${names}. Закрыть эту вкладку и продолжить?`,
+      );
+      if (ok) {
+        applyResponse(await send({ type: "CREATE", confirmClose: true }));
+      } else {
+        setStatus("Отменено: вкладка звонка не закрыта.");
+      }
+      return;
+    }
+    applyResponse(response);
+  } finally {
+    busy = false;
+    render();
+  }
 }
 
 async function addManual(): Promise<void> {
@@ -120,55 +125,61 @@ function applyResponse(response: ExtensionResponse): void {
 function render(): void {
   const participants = session?.participants ?? [];
   const selectedCount = participants.filter((item) => item.selected).length;
+  const readyCount = participants.filter((item) => joinUrlFor(item)).length;
 
   participantsEl.replaceChildren();
   if (participants.length === 0) {
     const empty = document.createElement("div");
     empty.className = "muted";
-    empty.textContent = "Пока никого нет. Откройте страницу урока или добавьте имя вручную.";
+    empty.textContent = "Откройте страницу урока или добавьте имя.";
     participantsEl.append(empty);
   } else {
     for (const group of groupByLessonSlot(participants)) {
-      participantsEl.append(renderGroupHeader(group.items, group.label));
+      const key = slotKey(group.slot);
+      const collapsed = collapsedGroups.has(key);
+      participantsEl.append(renderGroupHeader(group.items, group.label, key, collapsed));
+      if (collapsed) continue;
       for (const participant of group.items) {
         participantsEl.append(renderParticipant(participant));
       }
     }
   }
 
-  createBtn.disabled = selectedCount === 0;
-  createBtn.textContent =
-    selectedCount > 0
-      ? `Создать резервные подключения (${selectedCount})`
-      : "Создать резервные подключения";
+  createBtn.disabled = busy || selectedCount === 0;
+  createBtn.textContent = busy
+    ? "Создаю…"
+    : selectedCount > 0
+      ? `Создать комнаты · ${selectedCount}`
+      : "Создать комнаты";
 
-  if (session && participants.length > 0 && !statusEl.classList.contains("error")) {
-    statusEl.textContent = `Найдены участники: ${selectedCount} из ${participants.length}`;
-  }
+  copyAdminBtn.hidden = readyCount === 0;
 
-  const reservations = session?.reservations ?? [];
-  resultsSection.hidden = reservations.length === 0;
-  resultsEl.replaceChildren();
-  for (const group of groupByLessonSlot(reservations)) {
-    resultsEl.append(renderResultsGroup(group.label, group.items));
-    for (const reservation of group.items) {
-      resultsEl.append(renderReservation(reservation));
-    }
-  }
-
-  if (reservations.some((item) => item.status === "ready")) {
-    statusEl.classList.remove("error");
-    const readyCount = reservations.filter((item) => item.status === "ready").length;
-    statusEl.textContent = settings.openInNewWindow
-      ? `Готово: ${readyCount} комнат в отдельном окне. Ссылки на этот урок запомнены.`
-      : `Готово: ${readyCount} комнат в текущем окне. Ссылки на этот урок запомнены.`;
+  if (!statusEl.classList.contains("error")) {
+    if (busy) setStatus("Создаю комнаты…");
+    else if (participants.length === 0) setStatus("");
+    else if (readyCount > 0) setStatus(`${readyCount} ${roomsWord(readyCount)} · ${selectedCount} из ${participants.length}`);
+    else setStatus(`${selectedCount} из ${participants.length}`);
   }
 }
 
 function renderGroupHeader(
   items: Session["participants"],
   label: string,
+  key: string,
+  collapsed: boolean,
 ): HTMLElement {
+  const head = document.createElement("div");
+  head.className = "group-head";
+
+  const toggle = document.createElement("button");
+  toggle.className = "group-toggle";
+  toggle.type = "button";
+  toggle.title = collapsed ? "Развернуть" : "Свернуть";
+  toggle.textContent = collapsed ? "▸" : "▾";
+  toggle.addEventListener("click", () => {
+    void toggleCollapsed(key);
+  });
+
   const wrap = document.createElement("label");
   wrap.className = "group-title";
 
@@ -185,10 +196,22 @@ function renderGroupHeader(
   });
 
   const text = document.createElement("span");
-  text.textContent = label;
-
+  text.textContent = collapsed ? `${label} · ${items.length}` : label;
   wrap.append(checkbox, text);
-  return wrap;
+  head.append(toggle, wrap);
+
+  if (items.some((item) => joinUrlFor(item))) {
+    const copyBtn = document.createElement("button");
+    copyBtn.className = "btn ghost";
+    copyBtn.type = "button";
+    copyBtn.textContent = "Slack";
+    copyBtn.addEventListener("click", () => {
+      void copyGroupSlack(items, copyBtn);
+    });
+    head.append(copyBtn);
+  }
+
+  return head;
 }
 
 function renderParticipant(participant: Session["participants"][number]): HTMLElement {
@@ -207,41 +230,83 @@ function renderParticipant(participant: Session["participants"][number]): HTMLEl
   });
 
   const text = document.createElement("span");
+  text.className = "name";
   text.textContent = participant.listName;
+  label.append(checkbox, text);
 
-  const meta = document.createElement("span");
-  meta.className = "skill";
   const room = roomState(participant);
-  meta.textContent = [participant.skill || (participant.source === "manual" ? "вручную" : ""), room.label]
-    .filter(Boolean)
-    .join(" · ");
+  const failed = matchReservation(participant);
+  const joinUrl = joinUrlFor(participant);
 
-  const body = document.createElement("span");
-  body.append(text, document.createElement("br"), meta);
-
-  label.append(checkbox, body);
-
+  const actions = document.createElement("div");
+  actions.className = "row-actions";
   const openBtn = document.createElement("button");
   openBtn.className = "btn ghost";
   openBtn.type = "button";
   openBtn.textContent = room.kind === "open" ? "К звонку" : "Открыть";
-  openBtn.title =
-    room.kind === "open" ? "Перейти во вкладку этого ученика" : "Открыть вкладку только для этого ученика";
   openBtn.addEventListener("click", (event) => {
     event.preventDefault();
-    void openParticipant(participant.localId, openBtn);
+    void openParticipant(participant.localId, participant.userId, openBtn);
   });
+  actions.append(openBtn);
 
-  row.append(label, openBtn);
+  const meta = document.createElement("div");
+  meta.className = "row-meta";
+  const statusBits = [
+    participant.skill || (participant.source === "manual" ? "вручную" : ""),
+    failed?.status === "failed" ? failed.error : room.label,
+  ].filter(Boolean);
+  if (statusBits.length > 0) {
+    const status = document.createElement("span");
+    status.className = "skill";
+    status.textContent = statusBits.join(" · ");
+    meta.append(status);
+  }
+  if (joinUrl) {
+    if (statusBits.length > 0) meta.append(dot());
+    meta.append(
+      metaAction("Ученику", (button) => copyStudentFor(participant, button)),
+      dot(),
+      metaAction("Slack", (button) => copyOneSlack(participant, button)),
+    );
+  }
+
+  row.append(label, actions);
+  if (meta.childNodes.length > 0) row.append(meta);
   return row;
+}
+
+function metaAction(label: string, onClick: (button: HTMLButtonElement) => Promise<void>): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.className = "linkish";
+  button.type = "button";
+  button.textContent = label;
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    void onClick(button);
+  });
+  return button;
+}
+
+function dot(): HTMLElement {
+  const el = document.createElement("span");
+  el.className = "dot";
+  el.textContent = "·";
+  return el;
 }
 
 function roomState(participant: Session["participants"][number]): { kind: "open" | "ready" | "none"; label: string } {
   const reservation = matchReservation(participant);
-  if (reservation?.tabId) return { kind: "open", label: "вкладка открыта" };
-  const key = memoryKeyFor(participant.userId, participant.localId);
-  if (reservation?.joinUrl || rememberedUrls[key]) return { kind: "ready", label: "есть ссылка" };
-  return { kind: "none", label: "" };
+  if (reservation?.tabId) return { kind: "open", label: "в звонке" };
+  if (joinUrlFor(participant)) return { kind: "ready", label: "есть ссылка" };
+  return { kind: "none", label: "нет ссылки" };
+}
+
+function joinUrlFor(participant: Session["participants"][number]): string {
+  const reservation = matchReservation(participant);
+  if (reservation?.joinUrl) return reservation.joinUrl;
+  return rememberedUrls[memoryKeyFor(participant.userId, participant.localId)] ?? "";
 }
 
 function matchReservation(participant: Session["participants"][number]): Session["reservations"][number] | undefined {
@@ -253,11 +318,18 @@ function matchReservation(participant: Session["participants"][number]): Session
   return reservations.find((item) => item.participantLocalId === participant.localId);
 }
 
-async function openParticipant(localId: string, button: HTMLButtonElement): Promise<void> {
+async function openParticipant(
+  localId: string,
+  userId: string | null,
+  button: HTMLButtonElement,
+): Promise<void> {
   button.disabled = true;
-  applyResponse(await send({ type: "OPEN_TAB", localId }));
-  button.disabled = false;
-  render();
+  try {
+    applyResponse(await send({ type: "OPEN_TAB", localId, userId }));
+  } finally {
+    button.disabled = false;
+    render();
+  }
 }
 
 async function toggleGroup(localIds: string[], selected: boolean): Promise<void> {
@@ -282,149 +354,98 @@ async function toggleSelected(): Promise<void> {
   render();
 }
 
-function renderResultsGroup(
-  label: string,
-  items: Session["reservations"],
-): HTMLElement {
-  const head = document.createElement("div");
-  head.className = "group-head";
-
-  const title = document.createElement("h3");
-  title.className = "group-title";
-  title.textContent = label;
-
-  const copyBtn = document.createElement("button");
-  copyBtn.className = "btn ghost";
-  copyBtn.type = "button";
-  copyBtn.textContent = "Slack";
-  copyBtn.addEventListener("click", () => {
-    void copyGroupSlack(items, label, copyBtn);
-  });
-
-  head.append(title, copyBtn);
-  return head;
-}
-
-function renderReservation(reservation: Session["reservations"][number]): HTMLElement {
-  const card = document.createElement("article");
-  card.className = "result";
-
-  const head = document.createElement("div");
-  head.className = "result-head";
-
-  const name = document.createElement("strong");
-  name.textContent = reservation.listName;
-
-  const actions = document.createElement("div");
-  actions.className = "result-actions";
-
-  const studentBtn = document.createElement("button");
-  studentBtn.className = "btn";
-  studentBtn.type = "button";
-  studentBtn.textContent = "Для ученика";
-  studentBtn.disabled = reservation.status !== "ready";
-  studentBtn.addEventListener("click", () => {
-    void copyStudent(reservation, studentBtn);
-  });
-
-  const slackBtn = document.createElement("button");
-  slackBtn.className = "btn";
-  slackBtn.type = "button";
-  slackBtn.textContent = "Для Slack";
-  slackBtn.disabled = reservation.status !== "ready";
-  slackBtn.addEventListener("click", () => {
-    void copyOneSlack(reservation, slackBtn);
-  });
-
-  const openBtn = document.createElement("button");
-  openBtn.className = "btn";
-  openBtn.type = "button";
-  openBtn.textContent = reservation.tabId ? "К звонку" : "Открыть";
-  openBtn.disabled = reservation.status !== "ready";
-  openBtn.addEventListener("click", () => {
-    void openParticipant(reservation.participantLocalId, openBtn);
-  });
-
-  actions.append(studentBtn, slackBtn, openBtn);
-  head.append(name, actions);
-
-  const url = document.createElement("div");
-  url.className = "url";
-  url.textContent =
-    reservation.status === "ready"
-      ? reservation.joinUrl
-      : reservation.error ?? "Не удалось создать комнату";
-
-  card.append(head, url);
-  return card;
-}
-
-async function copyStudent(
-  reservation: Session["reservations"][number],
+async function copyStudentFor(
+  participant: Session["participants"][number],
   button: HTMLButtonElement,
 ): Promise<void> {
+  const joinUrl = joinUrlFor(participant);
+  if (!joinUrl) return;
   settings = await loadSettingsFromWorker();
+  const reservation = matchReservation(participant);
   const text = buildStudentMessage(
     settings.studentTemplate,
-    reservation.greetingName,
-    reservation.joinUrl,
-    reservation.profileUrl,
+    participant.greetingName,
+    joinUrl,
+    reservation?.profileUrl || participant.profileUrl,
   );
   await copyText(text, button);
 }
 
 async function copyOneSlack(
-  reservation: Session["reservations"][number],
+  participant: Session["participants"][number],
   button: HTMLButtonElement,
 ): Promise<void> {
+  const joinUrl = joinUrlFor(participant);
+  if (!joinUrl) return;
+  const reservation = matchReservation(participant);
   await copySlackClipboard([
     {
-      name: reservation.listName,
-      meetingUrl: reservation.joinUrl,
-      profileUrl: reservation.profileUrl,
+      name: participant.listName,
+      meetingUrl: joinUrl,
+      profileUrl: reservation?.profileUrl || participant.profileUrl,
     },
   ]);
   copied(button);
 }
 
 async function copyGroupSlack(
-  items: Session["reservations"],
-  label: string,
+  items: Session["participants"],
   button: HTMLButtonElement,
 ): Promise<void> {
-  const ready = items.filter((item) => item.status === "ready");
-  await copySlackClipboardFromGroups([
-    {
-      label,
-      items: ready.map((item) => ({
+  const ready = items.flatMap((item) => {
+    const joinUrl = joinUrlFor(item);
+    if (!joinUrl) return [];
+    const reservation = matchReservation(item);
+    return [
+      {
         name: item.listName,
-        meetingUrl: item.joinUrl,
-        profileUrl: item.profileUrl,
-      })),
-    },
-  ]);
+        meetingUrl: joinUrl,
+        profileUrl: reservation?.profileUrl || item.profileUrl,
+      },
+    ];
+  });
+  await copySlackClipboard(ready);
   copied(button);
 }
 
 async function copyAdmin(): Promise<void> {
   settings = await loadSettingsFromWorker();
-  const groups = groupByLessonSlot(
-    (session?.reservations ?? []).filter((item) => item.status === "ready"),
-  ).map((group) => ({
-    label: group.label,
-    items: group.items.map((item) => ({
-      name: item.listName,
-      meetingUrl: item.joinUrl,
-      profileUrl: item.profileUrl,
-    })),
-  }));
-  await copySlackClipboardFromGroups(groups, settings.adminHeader);
+  const items = sortByLessonSlot(session?.participants ?? []).flatMap((item) => {
+    const joinUrl = joinUrlFor(item);
+    if (!joinUrl) return [];
+    const reservation = matchReservation(item);
+    return [
+      {
+        name: item.listName,
+        meetingUrl: joinUrl,
+        profileUrl: reservation?.profileUrl || item.profileUrl,
+      },
+    ];
+  });
+  await copySlackClipboard(items, settings.adminHeader);
   copied(copyAdminBtn);
 }
 
 async function copyText(text: string, button: HTMLButtonElement): Promise<void> {
   await navigator.clipboard.writeText(text);
   copied(button);
+}
+
+function slotKey(slot: LessonSlot | null): string {
+  return slot == null ? "none" : String(slot);
+}
+
+async function toggleCollapsed(key: string): Promise<void> {
+  if (collapsedGroups.has(key)) collapsedGroups.delete(key);
+  else collapsedGroups.add(key);
+  await chrome.storage.session.set({ [COLLAPSED_KEY]: [...collapsedGroups] });
+  render();
+}
+
+async function loadCollapsedGroups(): Promise<Set<string>> {
+  const stored = await chrome.storage.session.get(COLLAPSED_KEY);
+  const keys = stored[COLLAPSED_KEY];
+  return new Set(Array.isArray(keys) ? keys.filter((key) => typeof key === "string") : []);
 }
 
 function copied(button: HTMLButtonElement): void {
@@ -435,6 +456,19 @@ function copied(button: HTMLButtonElement): void {
     button.classList.remove("copied");
     button.textContent = previous;
   }, 1500);
+}
+
+function setStatus(text: string): void {
+  statusEl.classList.remove("error");
+  statusEl.textContent = text;
+}
+
+function roomsWord(count: number): string {
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  if (mod10 === 1 && mod100 !== 11) return "комната";
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return "комнаты";
+  return "комнат";
 }
 
 async function loadSettingsFromWorker(): Promise<Settings> {
@@ -458,17 +492,12 @@ function extractErrorText(reason: string): string {
   return reason;
 }
 
-async function currentLessonTabId(): Promise<number | undefined> {
-  const tabs = await chrome.tabs.query({ lastFocusedWindow: true });
-  const httpActive = tabs.find((tab) => {
-    const url = tab.url ?? "";
-    return tab.active && (url.startsWith("http://") || url.startsWith("https://") || url.startsWith("file://"));
-  });
-  return httpActive?.id ?? tabs.find((tab) => tab.active)?.id;
-}
-
 async function send(request: ExtensionRequest): Promise<ExtensionResponse> {
-  return chrome.runtime.sendMessage(request) as Promise<ExtensionResponse>;
+  try {
+    return (await chrome.runtime.sendMessage(request)) as ExtensionResponse;
+  } catch {
+    return (await chrome.runtime.sendMessage(request)) as ExtensionResponse;
+  }
 }
 
 function must<T extends HTMLElement = HTMLElement>(selector: string): T {

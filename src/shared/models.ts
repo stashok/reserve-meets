@@ -55,7 +55,7 @@ export interface Session {
 
 export interface Settings {
   jitsiBaseUrl: string;
-  roomPrefix: string;
+  roomNamespace: string;
   teacherDisplayName: string;
   muteOnOpen: boolean;
   openInNewWindow: boolean;
@@ -67,7 +67,7 @@ export interface Settings {
 
 export const DEFAULT_SETTINGS: Settings = {
   jitsiBaseUrl: "https://meet.jit.si",
-  roomPrefix: "Reserve",
+  roomNamespace: "",
   teacherDisplayName: "Преподаватель",
   muteOnOpen: true,
   openInNewWindow: true,

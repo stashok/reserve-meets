@@ -31,12 +31,13 @@ const ADVERBS = [
   "Steadily", "Strongly", "Surely", "Swiftly", "Tightly", "Truly", "Warmly", "Wisely",
 ];
 
-export function buildJitsiRoomName(): string {
-  return `${pick(ADJECTIVES)}${pick(PLURAL_NOUNS)}${pick(VERBS)}${pick(ADVERBS)}`;
+export function buildJitsiRoomName(namespace: string): string {
+  const token = namespace.replace(/[^a-zA-Z0-9]/g, "");
+  return `${pick(ADJECTIVES)}${pick(PLURAL_NOUNS)}${pick(VERBS)}${pick(ADVERBS)}${token}`;
 }
 
-export function buildJitsiUrl(baseUrl: string, roomName = buildJitsiRoomName()): string {
-  return `${baseUrl.replace(/\/+$/, "")}/${roomName}`;
+export function buildJitsiUrl(baseUrl: string, namespace: string): string {
+  return `${baseUrl.replace(/\/+$/, "")}/${buildJitsiRoomName(namespace)}`;
 }
 
 export function teacherLaunchUrl(joinUrl: string, settings: { muteOnOpen: boolean; teacherDisplayName: string }): string {
@@ -53,7 +54,29 @@ export function teacherLaunchUrl(joinUrl: string, settings: { muteOnOpen: boolea
 }
 
 function pick(words: string[]): string {
-  const bytes = new Uint8Array(1);
-  crypto.getRandomValues(bytes);
-  return words[bytes[0] % words.length];
+  return words[randomIndex(words.length)];
+}
+
+const NAMESPACE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+
+export function createRoomNamespace(): string {
+  return randomString(NAMESPACE_ALPHABET, 8);
+}
+
+function randomIndex(length: number): number {
+  const max = 256 - (256 % length);
+  while (true) {
+    const bytes = new Uint8Array(1);
+    crypto.getRandomValues(bytes);
+    if (bytes[0] >= max) continue;
+    return bytes[0] % length;
+  }
+}
+
+function randomString(alphabet: string, length: number): string {
+  const chars: string[] = [];
+  while (chars.length < length) {
+    chars.push(alphabet[randomIndex(alphabet.length)]);
+  }
+  return chars.join("");
 }
