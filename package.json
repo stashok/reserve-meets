@@ -1,0 +1,18 @@
+{
+  "name": "reserve-meets",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Браузерное расширение для резервных Jitsi-комнат на уроке",
+  "type": "module",
+  "scripts": {
+    "dev": "vite build --watch",
+    "build": "npm run icons && vite build",
+    "icons": "node icons/generate.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.1.4",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.3"
+  }
+}

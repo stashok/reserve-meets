@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <title>Reserve Meet — настройки</title>
+  </head>
+  <body>
+    <div class="wrap" style="max-width: 720px; margin: 0 auto; padding: 24px">
+      <header class="bar">
+        <h1>Настройки Reserve Meet</h1>
+      </header>
+
+      <form id="form" class="actions">
+        <label class="field">
+          <span>Jitsi-хост</span>
+          <input id="jitsiBaseUrl" type="url" required />
+        </label>
+
+        <label class="field">
+          <span>Ваше имя в Jitsi</span>
+          <input id="teacherDisplayName" type="text" />
+        </label>
+
+        <label class="check">
+          <input id="muteOnOpen" type="checkbox" />
+          <span>Выключать камеру и микрофон при входе</span>
+        </label>
+
+        <fieldset class="field">
+          <legend>Куда открывать вкладки</legend>
+          <label class="check">
+            <input id="openInNewWindow" name="tabTarget" type="radio" value="new" />
+            <span>В новом окне</span>
+          </label>
+          <label class="check">
+            <input id="openInCurrentWindow" name="tabTarget" type="radio" value="current" />
+            <span>В текущем окне</span>
+          </label>
+        </fieldset>
+
+        <p class="muted">
+          Горячие клавиши по умолчанию: Alt+Shift+R — открыть панель, Alt+Shift+U — обновить список.
+          Если не сработают, назначьте их в настройках сочетаний клавиш браузера.
+        </p>
+
+        <label class="field">
+          <span>Шаблон сообщения ученику. Переменные: {name}, {meeting_url}, {profile_url}, {provider}, {date}</span>
+          <textarea id="studentTemplate"></textarea>
+        </label>
+
+        <label class="field">
+          <span>Заголовок, если копируете всех в Slack сразу. Можно оставить пустым.</span>
+          <input id="adminHeader" type="text" />
+        </label>
+
+        <label class="field">
+          <span>Кнопка Slack вставляет имя и фамилию как гиперссылку на профиль (как Ctrl+K) и URL комнаты. Это поле можно не менять.</span>
+          <textarea id="adminItemTemplate"></textarea>
+        </label>
+
+        <label class="field">
+          <span>Ссылка на профиль, если её нет в карточке. Сейчас: {origin}/profile/{user_id}</span>
+          <input id="profileUrlTemplate" type="text" placeholder="{origin}/profile/{user_id}" />
+        </label>
+
+        <button class="btn primary" type="submit">Сохранить</button>
+        <div id="saved" class="muted" hidden>Сохранено</div>
+      </form>
+    </div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

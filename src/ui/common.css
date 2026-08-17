@@ -1,0 +1,297 @@
+:root {
+  color-scheme: dark;
+  --bg: #1b1d24;
+  --bg-elevated: #242833;
+  --stroke: #343a48;
+  --text: #edf0f6;
+  --muted: #9aa3b5;
+  --accent: #3d8bfd;
+  --accent-text: #fff;
+  --ok: #3dd68c;
+  --danger: #ff6b6b;
+  --focus: #7ab0ff;
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+body {
+  min-width: 280px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+a {
+  color: var(--accent);
+}
+
+.wrap {
+  padding: 12px;
+  display: grid;
+  gap: 12px;
+}
+
+header.bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+h2 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.group-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 4px;
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--focus);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.group-title input {
+  margin: 0;
+  flex: none;
+}
+
+.group-title:first-child {
+  margin-top: 0;
+}
+
+#results .group-title {
+  cursor: default;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.status {
+  padding: 8px 10px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--stroke);
+  border-radius: 8px;
+}
+
+.status.error {
+  border-color: #5a2b2b;
+  color: #ffc9c9;
+}
+
+.list {
+  display: grid;
+  gap: 4px;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 8px;
+  border: 1px solid var(--stroke);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+}
+
+.row-main {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  flex: 1;
+  cursor: pointer;
+}
+
+.row-main input {
+  margin-top: 3px;
+}
+
+.row > .btn {
+  flex: none;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.row label {
+  display: grid;
+  gap: 2px;
+  flex: 1;
+}
+
+.group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 8px 0 4px;
+}
+
+.group-head .group-title {
+  margin: 0;
+}
+
+.group-head .btn {
+  padding: 4px 8px;
+  font-size: 11px;
+}
+
+.skill {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.actions {
+  display: grid;
+  gap: 8px;
+}
+
+.btn {
+  border: 1px solid var(--stroke);
+  background: var(--bg-elevated);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.btn:hover {
+  border-color: var(--focus);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+  font-weight: 650;
+}
+
+.btn.ghost {
+  background: transparent;
+}
+
+.btn.copied {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
+.result {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--stroke);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+}
+
+.result .url {
+  color: var(--muted);
+  word-break: break-all;
+  font-size: 12px;
+}
+
+.result-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+input[type="text"],
+input[type="url"],
+textarea {
+  width: 100%;
+  border: 1px solid var(--stroke);
+  background: #15171d;
+  color: var(--text);
+  border-radius: 8px;
+  padding: 8px;
+}
+
+textarea {
+  min-height: 120px;
+  resize: vertical;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+}
+
+.check {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+fieldset.field {
+  border: 1px solid var(--stroke);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 0;
+}
+
+fieldset.field legend {
+  padding: 0 6px;
+  color: var(--muted);
+}
+
+footer.bar {
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted);
+}
+
+.manual {
+  display: flex;
+  gap: 8px;
+}
+
+.manual input {
+  flex: 1;
+}
