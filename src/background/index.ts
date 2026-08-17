@@ -2,14 +2,23 @@ import { sortByLessonSlot } from "../participants/duration";
 import { toParticipant, withDisplayNames } from "../participants/names";
 import { resolveProfileUrl } from "../participants/profileUrl";
 import { buildJitsiUrl } from "../providers/jitsi";
+import { isVivaldi } from "../shared/browser";
 import type { ExtensionRequest, ExtensionResponse } from "../shared/messages";
-import type { Reservation, Session } from "../shared/models";
+import { clampHelpSoundVolume, type Reservation, type Session } from "../shared/models";
 import { lessonKeyFromUrl, loadLinkMemory, memoryKeyFor, rememberJoinUrls } from "../storage/links";
-import { loadExtractError, loadSession, saveExtractError, saveSession } from "../storage/session";
+import {
+  loadExtractError,
+  loadRaisedHands,
+  loadSession,
+  saveExtractError,
+  saveRaisedHands,
+  saveSession,
+  type RaisedHands,
+} from "../storage/session";
 import { loadSettings, saveSettings } from "../storage/settings";
 import { buildSlackClipboard } from "../templates/clipboard";
 import { buildStudentMessage } from "../templates/render";
-import { activeMeetingTabIds, focusTab, openMeetingTabs, orderTabs, syncMeetingTabs, tabStillOpen, tabsThatWillClose } from "./tabs";
+import { activeMeetingTabIds, focusTab, openMeetingTabs, orderTabs, syncMeetingTabs, tabStillOpen, tabsThatWillClose, tryTileTabs } from "./tabs";
 
 chrome.runtime.onInstalled.addListener(() => {
   void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false }).catch(() => undefined);
@@ -20,6 +29,9 @@ chrome.runtime.onStartup.addListener(() => {
 });
 
 chrome.runtime.onMessage.addListener((message: ExtensionRequest, sender, sendResponse) => {
+  if (message.type === "PLAY_HELP_SOUND" || message.type === "PLAY_HELP_SOUND_UI") {
+    return;
+  }
   void handleMessage(message, sender)
     .then(sendResponse)
     .catch((error: unknown) => {
@@ -41,6 +53,8 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   void forgetClosedTab(tabId);
 });
 
+void syncHelpBadge();
+
 async function handleMessage(
   message: ExtensionRequest,
   sender: chrome.runtime.MessageSender,
@@ -58,7 +72,7 @@ async function handleMessage(
       await addManual(message.name);
       return stateResponse();
     case "CREATE":
-      return createReservations(message.confirmClose === true);
+      return createReservations(message.confirmClose === true, message.tile === true && isVivaldi());
     case "OPEN_TAB":
       return openParticipantTab(message.localId, message.userId);
     case "GET_SETTINGS": {
@@ -80,16 +94,23 @@ async function handleMessage(
     case "SET_OVERLAY_HIDDEN":
       await setOverlayHidden(message.tabId ?? sender.tab?.id, message.hidden);
       return overlayForTab(message.tabId ?? sender.tab?.id);
+    case "HAND_STATE":
+      await setHandState(sender.tab?.id, message.raised, message.raisedAt, message.remoteId);
+      return { type: "SAVED" };
     default:
       return { type: "ERROR", message: "Неизвестный запрос" };
   }
 }
 
-async function stateResponse(): Promise<ExtensionResponse> {
+async function stateResponse(tileHint?: string | null): Promise<ExtensionResponse> {
   const session = await reconcileSession(await loadSession());
   const extractError = await loadExtractError();
   const rememberedUrls = session ? (await loadLinkMemory(session.pageUrl)).urls : {};
-  return { type: "STATE", session, extractError, rememberedUrls };
+  const hands = await pruneRaisedHands(session);
+  const helpSince = Object.fromEntries(
+    Object.entries(hands).map(([tabId, watch]) => [tabId, watch.since]),
+  );
+  return { type: "STATE", session, extractError, rememberedUrls, helpSince, tileHint: tileHint ?? null };
 }
 
 async function reconcileSession(session: Session | null): Promise<Session | null> {
@@ -373,7 +394,7 @@ async function addManual(name: string): Promise<void> {
   await saveExtractError(null);
 }
 
-async function createReservations(confirmClose: boolean): Promise<ExtensionResponse> {
+async function createReservations(confirmClose: boolean, tile = false): Promise<ExtensionResponse> {
   const session = await loadSession();
   if (!session) return stateResponse();
 
@@ -455,7 +476,12 @@ async function createReservations(confirmClose: boolean): Promise<ExtensionRespo
   for (const reservation of opened) {
     if (reservation.tabId) void injectMeetingUi(reservation.tabId);
   }
-  return stateResponse();
+  let tileHint: string | null = null;
+  if (tile && isVivaldi()) {
+    const tabIds = opened.flatMap((item) => (item.tabId != null ? [item.tabId] : []));
+    tileHint = await tryTileTabs(tabIds);
+  }
+  return stateResponse(tileHint);
 }
 
 async function openParticipantTab(
@@ -561,7 +587,11 @@ async function findLiveMeetingWindow(reservations: Reservation[]): Promise<numbe
 
 async function forgetClosedTab(tabId: number): Promise<void> {
   const session = await loadSession();
-  if (!session?.reservations.some((item) => item.tabId === tabId)) return;
+  const droppedHelp = await dropRaisedHand(tabId);
+  if (!session?.reservations.some((item) => item.tabId === tabId)) {
+    if (droppedHelp) notifyUi();
+    return;
+  }
   await saveSession({
     ...session,
     reservations: session.reservations.map((item) =>
@@ -569,6 +599,241 @@ async function forgetClosedTab(tabId: number): Promise<void> {
     ),
   });
   notifyUi();
+}
+
+const HAND_STICKY_MS = 5000;
+const handDropTimers = new Map<number, ReturnType<typeof setTimeout>>();
+
+async function setHandState(
+  tabId: number | undefined,
+  raised: boolean,
+  raisedAt?: number,
+  remoteId?: string,
+): Promise<void> {
+  if (tabId == null) return;
+  const session = await loadSession();
+  if (!session?.reservations.some((item) => item.tabId === tabId)) return;
+  const current = await pruneStickyHands(await loadRaisedHands());
+  const key = String(tabId);
+  const previous = current[key];
+
+  if (!raised) {
+    if (!previous || previous.downAt != null) return;
+    await saveRaisedHands({
+      ...current,
+      [key]: { ...previous, downAt: Date.now() },
+    });
+    scheduleHandDrop(tabId);
+    return;
+  }
+
+  const incoming = normalizeRaisedAt(raisedAt);
+  const signal = handSignal(remoteId, incoming);
+  if (previous && previous.downAt == null && isSameRaise(previous.signal, signal)) return;
+
+  clearHandDrop(tabId);
+  const now = Date.now();
+  const next = {
+    ...current,
+    [key]: {
+      since: previous?.since ?? now,
+      signal,
+      downAt: null,
+    },
+  };
+  await saveRaisedHands(next);
+  if (previous) return;
+  await syncHelpBadge(Object.keys(next).length);
+  notifyUi();
+  await playHelpSound(tabId);
+}
+
+function scheduleHandDrop(tabId: number): void {
+  clearHandDrop(tabId);
+  const timer = setTimeout(() => {
+    handDropTimers.delete(tabId);
+    void expireStickyHand(tabId);
+  }, HAND_STICKY_MS);
+  handDropTimers.set(tabId, timer);
+}
+
+function clearHandDrop(tabId: number): void {
+  const timer = handDropTimers.get(tabId);
+  if (timer == null) return;
+  clearTimeout(timer);
+  handDropTimers.delete(tabId);
+}
+
+async function expireStickyHand(tabId: number): Promise<void> {
+  const current = await loadRaisedHands();
+  const watch = current[String(tabId)];
+  if (!watch?.downAt || Date.now() - watch.downAt < HAND_STICKY_MS) return;
+  if (await dropRaisedHand(tabId)) notifyUi();
+}
+
+async function dropRaisedHand(tabId: number): Promise<boolean> {
+  clearHandDrop(tabId);
+  const current = await loadRaisedHands();
+  const key = String(tabId);
+  if (current[key] == null) return false;
+  const { [key]: _dropped, ...rest } = current;
+  await saveRaisedHands(rest);
+  await syncHelpBadge(Object.keys(rest).length);
+  return true;
+}
+
+async function pruneRaisedHands(session: Session | null): Promise<RaisedHands> {
+  const stored = await loadRaisedHands();
+  const live = new Set(
+    (session?.reservations ?? []).flatMap((item) => (item.tabId != null ? [String(item.tabId)] : [])),
+  );
+  const next: RaisedHands = {};
+  for (const [key, watch] of Object.entries(pruneStickyHands(stored))) {
+    if (live.has(key)) next[key] = watch;
+  }
+  if (!sameHandKeys(stored, next)) await saveRaisedHands(next);
+  await syncHelpBadge(Object.keys(next).length);
+  return next;
+}
+
+function pruneStickyHands(current: RaisedHands): RaisedHands {
+  const now = Date.now();
+  const next: RaisedHands = {};
+  for (const [key, watch] of Object.entries(current)) {
+    if (watch.downAt != null && now - watch.downAt >= HAND_STICKY_MS) continue;
+    next[key] = watch;
+  }
+  return next;
+}
+
+function sameHandKeys(left: RaisedHands, right: RaisedHands): boolean {
+  const a = Object.keys(left).sort();
+  const b = Object.keys(right).sort();
+  return a.length === b.length && a.every((key, index) => key === b[index]);
+}
+
+function handSignal(remoteId: string | undefined, raisedAt: number | null): string {
+  const id = remoteId?.trim() ?? "";
+  if (!id && raisedAt == null) return "up";
+  return `${id}:${raisedAt ?? 0}`;
+}
+
+function isSameRaise(previous: string, next: string): boolean {
+  if (previous === next) return true;
+  if (next === "up") return previous !== "";
+  return false;
+}
+
+async function syncHelpBadge(count?: number): Promise<void> {
+  const value = count ?? Object.keys(await loadRaisedHands()).length;
+  await chrome.action.setBadgeBackgroundColor({ color: "#c41e3a" });
+  if (chrome.action.setBadgeTextColor) {
+    await chrome.action.setBadgeTextColor({ color: "#ffffff" });
+  }
+  await chrome.action.setBadgeText({ text: value > 0 ? String(value) : "" });
+  await chrome.action.setTitle({
+    title: value > 0 ? `Reserve Meet · нужна помощь: ${value}` : "Reserve Meet",
+  });
+}
+
+function normalizeRaisedAt(value?: number): number | null {
+  if (value == null || !Number.isFinite(value) || value <= 0) return null;
+  return value < 1e12 ? value * 1000 : value;
+}
+
+let offscreenLock: Promise<void> | null = null;
+
+async function playHelpSound(tabId?: number): Promise<void> {
+  const settings = await loadSettings();
+  const volume = clampHelpSoundVolume(settings.helpSoundVolume);
+  if (!settings.helpSound || volume <= 0) return;
+  if (await tryOffscreenChime(volume)) return;
+  if (tabId != null) {
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        func: playHelpChimeInPage,
+        args: [volume],
+      });
+      return;
+    } catch {
+      // вкладка ещё не готова
+    }
+  }
+  chrome.runtime.sendMessage({ type: "PLAY_HELP_SOUND_UI", volume }, () => {
+    void chrome.runtime.lastError;
+  });
+}
+
+async function tryOffscreenChime(volume: number): Promise<boolean> {
+  try {
+    await ensureOffscreen();
+    await chrome.runtime.sendMessage({ type: "PLAY_HELP_SOUND", volume });
+    return true;
+  } catch {
+    await waitMs(150);
+    try {
+      await chrome.runtime.sendMessage({ type: "PLAY_HELP_SOUND", volume });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+function waitMs(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function playHelpChimeInPage(volume: number): void {
+  const level = Math.min(100, Math.max(0, Number(volume) || 0)) / 100;
+  if (level <= 0) return;
+  const ctx = new AudioContext();
+  const peak = 0.12 + level * 0.7;
+  const start = ctx.currentTime + 0.01;
+  const beep = (when: number, freq: number, dur: number) => {
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, when);
+    gain.gain.exponentialRampToValueAtTime(peak, when + 0.018);
+    gain.gain.exponentialRampToValueAtTime(0.0001, when + dur);
+    gain.connect(ctx.destination);
+    const osc = ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(freq, when);
+    osc.connect(gain);
+    osc.start(when);
+    osc.stop(when + dur + 0.03);
+  };
+  beep(start, 880, 0.16);
+  beep(start + 0.16, 1175, 0.22);
+  window.setTimeout(() => {
+    void ctx.close();
+  }, 500);
+}
+
+async function ensureOffscreen(): Promise<void> {
+  if (!chrome.offscreen) throw new Error("offscreen unavailable");
+  if (offscreenLock) {
+    await offscreenLock;
+    return;
+  }
+  offscreenLock = (async () => {
+    const existing = await chrome.runtime.getContexts({
+      contextTypes: ["OFFSCREEN_DOCUMENT"],
+    });
+    if (existing.length > 0) return;
+    await chrome.offscreen.createDocument({
+      url: "src/ui/offscreen/index.html",
+      reasons: ["AUDIO_PLAYBACK"],
+      justification: "Короткий звук, когда ученик поднял руку",
+    });
+    await waitMs(150);
+  })().finally(() => {
+    offscreenLock = null;
+  });
+  await offscreenLock;
 }
 
 function notifyUi(): void {
@@ -635,6 +900,7 @@ async function overlayForTab(tabId: number | undefined): Promise<ExtensionRespon
     ),
     slackText: slack.text,
     slackHtml: slack.html,
+    raised: String(tabId) in (await loadRaisedHands()),
   };
 }
 
@@ -679,6 +945,16 @@ async function injectMeetingUi(tabId: number): Promise<void> {
     });
   } catch {
     // вкладка ещё не готова или это не http-страница
+  }
+
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["watchHands.js"],
+      world: "MAIN",
+    });
+  } catch {
+    // то же: страница ещё грузится или это не Jitsi
   }
 }
 

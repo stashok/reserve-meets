@@ -26,6 +26,19 @@
           <span>Выключать камеру и микрофон при входе</span>
         </label>
 
+        <label class="check">
+          <input id="helpSound" type="checkbox" />
+          <span>Звук, когда ученик поднял руку</span>
+        </label>
+
+        <div class="volume" id="help-sound-volume">
+          <label class="field">
+            <span>Громкость <span id="helpSoundVolumeValue">80%</span></span>
+            <input id="helpSoundVolume" type="range" min="0" max="100" step="1" />
+          </label>
+          <button class="btn ghost" id="help-sound-preview" type="button">Прослушать</button>
+        </div>
+
         <fieldset class="field">
           <legend>Куда открывать вкладки</legend>
           <label class="check">

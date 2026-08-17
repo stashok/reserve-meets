@@ -229,6 +229,115 @@ export async function orderTabs(reservations: Reservation[]): Promise<void> {
   }
 }
 
+type VivaldiTab = chrome.tabs.Tab & { vivExtData?: string };
+
+export async function tryTileTabs(tabIds: number[]): Promise<string> {
+  const unique = [...new Set(tabIds)];
+  if (unique.length < 2) {
+    return "Нужны хотя бы две вкладки. Комнаты созданы, размещать нечего.";
+  }
+
+  const tabs: VivaldiTab[] = [];
+  for (const id of unique) {
+    const tab = (await tabStillOpen(id)) as VivaldiTab | undefined;
+    if (tab?.id != null && tab.windowId != null) tabs.push(tab);
+  }
+  if (tabs.length < 2) {
+    return "Не нашёл две открытые вкладки комнат. Комнаты созданы.";
+  }
+
+  const windowId = tabs[0].windowId;
+  if (windowId == null || tabs.some((tab) => tab.windowId !== windowId)) {
+    return "Вкладки в разных окнах. Сначала соберите их в одно, затем Ctrl+F7.";
+  }
+
+  await chrome.windows
+    .update(windowId, { focused: true, state: "maximized" })
+    .catch(() => undefined);
+
+  await wait(250);
+
+  const fresh: VivaldiTab[] = [];
+  for (const tab of tabs) {
+    if (tab.id == null) continue;
+    const next = (await tabStillOpen(tab.id)) as VivaldiTab | undefined;
+    if (next?.id != null) fresh.push(next);
+  }
+  if (fresh.length < 2) {
+    return "Не нашёл две открытые вкладки комнат. Комнаты созданы.";
+  }
+
+  const tileId = crypto.randomUUID();
+  const layout = vivaldiTileLayout(fresh.length);
+  let wrote = 0;
+  let writeError = "";
+
+  for (const [index, tab] of fresh.entries()) {
+    if (tab.id == null) continue;
+    const data = parseVivExtData(tab.vivExtData);
+    data.tiling = { id: tileId, index, layout, type: "selection" };
+    const error = await writeVivExtData(tab.id, data);
+    if (error) writeError = error;
+    else wrote += 1;
+  }
+
+  const indexes = fresh
+    .map((tab) => tab.index)
+    .filter((index): index is number => typeof index === "number")
+    .sort((a, b) => a - b);
+  await chrome.tabs.highlight({ windowId, tabs: indexes }).catch(() => undefined);
+
+  const check = (await chrome.tabs.get(fresh[0].id!).catch(() => undefined)) as VivaldiTab | undefined;
+  const storedTiling = parseVivExtData(check?.vivExtData).tiling;
+  const storedId =
+    storedTiling && typeof storedTiling === "object" && "id" in storedTiling
+      ? String((storedTiling as { id?: unknown }).id ?? "")
+      : "";
+
+  if (storedId === tileId) {
+    return "Записал размещение Vivaldi. Если сетки нет — нажмите Ctrl+F7.";
+  }
+  if (wrote > 0 && !writeError) {
+    return "Вкладки выделены. Если сетки нет — нажмите Ctrl+F7.";
+  }
+  if (writeError) {
+    return `Автоматически разместить не вышло (${writeError}). Вкладки выделены — нажмите Ctrl+F7.`;
+  }
+  return "Вкладки выделены. Нажмите Ctrl+F7 — сетка, или кнопку размещения в строке состояния.";
+}
+
+/** Vivaldi: 2 вкладки рядом, 3 и больше — сетка (4 → 2×2, как Ctrl+F7). */
+function vivaldiTileLayout(count: number): "column" | "grid" {
+  return count >= 3 ? "grid" : "column";
+}
+
+function parseVivExtData(raw: string | undefined): Record<string, unknown> {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+async function writeVivExtData(tabId: number, data: Record<string, unknown>): Promise<string> {
+  try {
+    await chrome.tabs.update(tabId, { vivExtData: JSON.stringify(data) } as chrome.tabs.UpdateProperties);
+    return chrome.runtime.lastError?.message ?? "";
+  } catch (error) {
+    return error instanceof Error ? error.message : "не удалось записать размещение";
+  }
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
 function shouldReuseTab(tab: chrome.tabs.Tab, joinUrl: string): boolean {
   const tabUrl = tab.url ?? tab.pendingUrl ?? "";
   if (!tabUrl || tabUrl === "about:blank" || tab.status === "loading") return true;

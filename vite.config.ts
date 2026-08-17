@@ -16,6 +16,7 @@ export default defineConfig({
         sidepanel: resolve(root, "src/ui/sidepanel/index.html"),
         options: resolve(root, "src/ui/options/index.html"),
         popup: resolve(root, "src/ui/popup/index.html"),
+        offscreen: resolve(root, "src/ui/offscreen/index.html"),
         background: resolve(root, "src/background/index.ts"),
       },
       output: {
@@ -33,6 +34,7 @@ export default defineConfig({
         cpSync(resolve(root, "manifest.json"), resolve(root, "dist/manifest.json"));
         cpSync(resolve(root, "src/content/extract.js"), resolve(root, "dist/extract.js"));
         cpSync(resolve(root, "src/content/overlay.js"), resolve(root, "dist/overlay.js"));
+        cpSync(resolve(root, "src/content/watchHands.js"), resolve(root, "dist/watchHands.js"));
         mkdirSync(resolve(root, "dist/icons"), { recursive: true });
         for (const file of readdirSync(resolve(root, "icons"))) {
           if (file.endsWith(".png")) {

@@ -1,6 +1,6 @@
 {
   "name": "reserve-meets",
-  "version": "0.3.2",
+  "version": "0.3.8.3",
   "private": true,
   "description": "Браузерное расширение для резервных Jitsi-комнат на уроке",
   "type": "module",

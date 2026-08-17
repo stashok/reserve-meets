@@ -58,6 +58,8 @@ export interface Settings {
   roomNamespace: string;
   teacherDisplayName: string;
   muteOnOpen: boolean;
+  helpSound: boolean;
+  helpSoundVolume: number;
   openInNewWindow: boolean;
   studentTemplate: string;
   adminHeader: string;
@@ -70,6 +72,8 @@ export const DEFAULT_SETTINGS: Settings = {
   roomNamespace: "",
   teacherDisplayName: "Преподаватель",
   muteOnOpen: true,
+  helpSound: true,
+  helpSoundVolume: 80,
   openInNewWindow: true,
   studentTemplate: `Привет, {name}!
 
@@ -81,3 +85,9 @@ export const DEFAULT_SETTINGS: Settings = {
 {meeting_url}`,
   profileUrlTemplate: "{origin}/profile/{user_id}",
 };
+
+export function clampHelpSoundVolume(value: unknown): number {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n)) return DEFAULT_SETTINGS.helpSoundVolume;
+  return Math.min(100, Math.max(0, Math.round(n)));
+}

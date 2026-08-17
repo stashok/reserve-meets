@@ -1,4 +1,6 @@
+import { playHelpChime } from "../chime";
 import { groupByLessonSlot, sortByLessonSlot } from "../../participants/duration";
+import { isVivaldi } from "../../shared/browser";
 import type { ExtensionRequest, ExtensionResponse, UiEvent } from "../../shared/messages";
 import type { LessonSlot, Session, Settings } from "../../shared/models";
 import { DEFAULT_SETTINGS } from "../../shared/models";
@@ -8,8 +10,10 @@ import { buildStudentMessage } from "../../templates/render";
 import "../common.css";
 
 const statusEl = must("#status");
+const helpEl = must("#help");
 const participantsEl = must("#participants");
 const createBtn = must<HTMLButtonElement>("#create");
+const createTileBtn = must<HTMLButtonElement>("#create-tile");
 const refreshBtn = must<HTMLButtonElement>("#refresh");
 const copyAdminBtn = must<HTMLButtonElement>("#copy-admin");
 const manualForm = must<HTMLFormElement>("#manual-form");
@@ -19,14 +23,20 @@ const openOptions = must<HTMLAnchorElement>("#open-options");
 let session: Session | null = null;
 let settings: Settings = DEFAULT_SETTINGS;
 let rememberedUrls: Record<string, string> = {};
+let helpSince: Record<string, number> = {};
 let collapsedGroups = new Set<string>();
 let busy = false;
+let busyTile = false;
+let waitTimer: number | null = null;
+let tileHint = "";
 
 const COLLAPSED_KEY = "collapsedGroups";
+const canTile = isVivaldi();
 
 void boot();
 
 async function boot(): Promise<void> {
+  createTileBtn.hidden = !canTile;
   settings = await loadSettingsFromWorker();
   collapsedGroups = await loadCollapsedGroups();
   await refreshState(true);
@@ -36,7 +46,11 @@ async function boot(): Promise<void> {
   });
 
   createBtn.addEventListener("click", () => {
-    void createReservations();
+    void createReservations(false);
+  });
+
+  createTileBtn.addEventListener("click", () => {
+    void createReservations(false, true);
   });
 
   copyAdminBtn.addEventListener("click", () => {
@@ -57,7 +71,11 @@ async function boot(): Promise<void> {
     if (message?.type === "STATE_CHANGED") {
       void refreshState(false);
     }
+    if (message?.type === "PLAY_HELP_SOUND_UI") {
+      void playHelpChime(message.volume);
+    }
   });
+  startWaitTicker();
 }
 
 async function refreshState(extract: boolean): Promise<void> {
@@ -71,29 +89,36 @@ async function refreshState(extract: boolean): Promise<void> {
   }
 }
 
-async function createReservations(confirmClose = false): Promise<void> {
+async function createReservations(confirmClose = false, wantTile = false): Promise<void> {
+  const tile = wantTile && canTile;
   settings = await loadSettingsFromWorker();
   busy = true;
+  busyTile = tile;
   statusEl.classList.remove("error");
-  setStatus("Создаю комнаты…");
+  tileHint = "";
+  setStatus(tile ? "Создаю и размещаю…" : "Создаю комнаты…");
   render();
   try {
-    const response = await send({ type: "CREATE", confirmClose });
+    const response = await send({ type: "CREATE", confirmClose, tile });
     if (response.type === "CONFIRM_CLOSE") {
       const names = response.names.join(", ");
       const ok = window.confirm(
         `Вы сейчас в звонке: ${names}. Закрыть эту вкладку и продолжить?`,
       );
       if (ok) {
-        applyResponse(await send({ type: "CREATE", confirmClose: true }));
+        applyResponse(await send({ type: "CREATE", confirmClose: true, tile }));
       } else {
         setStatus("Отменено: вкладка звонка не закрыта.");
       }
       return;
     }
     applyResponse(response);
+    if (response.type === "STATE" && response.tileHint) {
+      tileHint = response.tileHint;
+    }
   } finally {
     busy = false;
+    busyTile = false;
     render();
   }
 }
@@ -115,6 +140,7 @@ function applyResponse(response: ExtensionResponse): void {
   if (response.type === "STATE") {
     session = response.session;
     rememberedUrls = response.rememberedUrls ?? {};
+    helpSince = response.helpSince ?? {};
     if (response.extractError && (!session || session.participants.length === 0)) {
       statusEl.classList.add("error");
       statusEl.textContent = extractErrorText(response.extractError);
@@ -126,6 +152,8 @@ function render(): void {
   const participants = session?.participants ?? [];
   const selectedCount = participants.filter((item) => item.selected).length;
   const readyCount = participants.filter((item) => joinUrlFor(item)).length;
+
+  renderHelp(participants);
 
   participantsEl.replaceChildren();
   if (participants.length === 0) {
@@ -146,19 +174,59 @@ function render(): void {
   }
 
   createBtn.disabled = busy || selectedCount === 0;
-  createBtn.textContent = busy
+  createBtn.textContent = busy && !busyTile
     ? "Создаю…"
     : selectedCount > 0
       ? `Создать комнаты · ${selectedCount}`
       : "Создать комнаты";
 
+  createTileBtn.hidden = !canTile;
+  createTileBtn.disabled = !canTile || busy || selectedCount < 2;
+  createTileBtn.textContent = busy && busyTile ? "Размещаю…" : "Создать и разместить";
+
   copyAdminBtn.hidden = readyCount === 0;
 
   if (!statusEl.classList.contains("error")) {
-    if (busy) setStatus("Создаю комнаты…");
+    if (busy) {
+      // текст статуса уже выставлен перед запросом
+    } else if (tileHint) setStatus(tileHint);
     else if (participants.length === 0) setStatus("");
     else if (readyCount > 0) setStatus(`${readyCount} ${roomsWord(readyCount)} · ${selectedCount} из ${participants.length}`);
     else setStatus(`${selectedCount} из ${participants.length}`);
+  }
+}
+
+function renderHelp(participants: Session["participants"]): void {
+  const items = participants
+    .map((item) => {
+      const tabId = matchReservation(item)?.tabId;
+      const since = tabId != null ? helpSince[String(tabId)] : undefined;
+      return since != null && tabId != null ? { participant: item, tabId, since } : null;
+    })
+    .filter((item): item is { participant: Session["participants"][number]; tabId: number; since: number } =>
+      Boolean(item),
+    )
+    .sort((a, b) => a.since - b.since);
+
+  helpEl.hidden = items.length === 0;
+  helpEl.replaceChildren();
+  if (items.length === 0) return;
+
+  const title = document.createElement("h2");
+  title.textContent = "Нужна помощь";
+  helpEl.append(title);
+
+  for (const item of items) {
+    const button = document.createElement("button");
+    button.className = "help-item";
+    button.type = "button";
+    button.addEventListener("click", () => {
+      void openParticipant(item.participant.localId, item.participant.userId, button);
+    });
+    const name = document.createElement("span");
+    name.textContent = item.participant.listName;
+    button.append(name, waitLabel(item.since));
+    helpEl.append(button);
   }
 }
 
@@ -237,13 +305,14 @@ function renderParticipant(participant: Session["participants"][number]): HTMLEl
   const room = roomState(participant);
   const failed = matchReservation(participant);
   const joinUrl = joinUrlFor(participant);
+  if (room.kind === "help") row.classList.add("needs-help");
 
   const actions = document.createElement("div");
   actions.className = "row-actions";
   const openBtn = document.createElement("button");
   openBtn.className = "btn ghost";
   openBtn.type = "button";
-  openBtn.textContent = room.kind === "open" ? "К звонку" : "Открыть";
+  openBtn.textContent = room.kind === "open" || room.kind === "help" ? "К звонку" : "Открыть";
   openBtn.addEventListener("click", (event) => {
     event.preventDefault();
     void openParticipant(participant.localId, participant.userId, openBtn);
@@ -258,9 +327,15 @@ function renderParticipant(participant: Session["participants"][number]): HTMLEl
   ].filter(Boolean);
   if (statusBits.length > 0) {
     const status = document.createElement("span");
-    status.className = "skill";
+    status.className = room.kind === "help" ? "skill help" : "skill";
     status.textContent = statusBits.join(" · ");
     meta.append(status);
+  }
+  const helpSinceAt = matchReservation(participant)?.tabId;
+  const waitingSince = helpSinceAt != null ? helpSince[String(helpSinceAt)] : undefined;
+  if (waitingSince != null) {
+    if (meta.childNodes.length > 0) meta.append(dot());
+    meta.append(waitLabel(waitingSince));
   }
   if (joinUrl) {
     if (statusBits.length > 0) meta.append(dot());
@@ -296,8 +371,13 @@ function dot(): HTMLElement {
   return el;
 }
 
-function roomState(participant: Session["participants"][number]): { kind: "open" | "ready" | "none"; label: string } {
+function roomState(
+  participant: Session["participants"][number],
+): { kind: "help" | "open" | "ready" | "none"; label: string } {
   const reservation = matchReservation(participant);
+  if (reservation?.tabId && helpSince[String(reservation.tabId)] != null) {
+    return { kind: "help", label: "поднял руку" };
+  }
   if (reservation?.tabId) return { kind: "open", label: "в звонке" };
   if (joinUrlFor(participant)) return { kind: "ready", label: "есть ссылка" };
   return { kind: "none", label: "нет ссылки" };
@@ -456,6 +536,31 @@ function copied(button: HTMLButtonElement): void {
     button.classList.remove("copied");
     button.textContent = previous;
   }, 1500);
+}
+
+function waitLabel(since: number): HTMLElement {
+  const el = document.createElement("span");
+  el.className = "wait";
+  el.dataset.waitSince = String(since);
+  el.textContent = formatWait(since);
+  return el;
+}
+
+function formatWait(since: number): string {
+  const sec = Math.max(0, Math.floor((Date.now() - since) / 1000));
+  const minutes = Math.floor(sec / 60);
+  const seconds = sec % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function startWaitTicker(): void {
+  if (waitTimer != null) return;
+  waitTimer = window.setInterval(() => {
+    for (const el of document.querySelectorAll<HTMLElement>("[data-wait-since]")) {
+      const since = Number(el.dataset.waitSince);
+      if (Number.isFinite(since)) el.textContent = formatWait(since);
+    }
+  }, 1000);
 }
 
 function setStatus(text: string): void {

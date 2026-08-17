@@ -1,4 +1,4 @@
-import { DEFAULT_SETTINGS, type Settings } from "../shared/models";
+import { clampHelpSoundVolume, DEFAULT_SETTINGS, type Settings } from "../shared/models";
 import { createRoomNamespace } from "../providers/jitsi";
 
 const SETTINGS_KEY = "settings";
@@ -37,9 +37,15 @@ export async function loadSettings(): Promise<Settings> {
     settings.roomNamespace = createRoomNamespace();
     await chrome.storage.local.set({ [SETTINGS_KEY]: settings });
   }
+  settings.helpSoundVolume = clampHelpSoundVolume(settings.helpSoundVolume);
   return settings;
 }
 
 export async function saveSettings(settings: Settings): Promise<void> {
-  await chrome.storage.local.set({ [SETTINGS_KEY]: settings });
+  await chrome.storage.local.set({
+    [SETTINGS_KEY]: {
+      ...settings,
+      helpSoundVolume: clampHelpSoundVolume(settings.helpSoundVolume),
+    },
+  });
 }

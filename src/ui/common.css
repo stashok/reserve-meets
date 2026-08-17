@@ -189,6 +189,59 @@ h2 {
   font-size: 12px;
 }
 
+.skill.help {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.row.needs-help .name {
+  color: var(--danger);
+}
+
+.help-queue {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  background: #fff5f6;
+  border: 1px solid #f0c4cb;
+  border-radius: 12px;
+}
+
+.help-queue[hidden] {
+  display: none;
+}
+
+.help-queue h2 {
+  margin: 0;
+  color: var(--danger);
+}
+
+.help-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 0;
+  background: var(--bg-elevated);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 8px 10px;
+  text-align: left;
+  font-weight: 600;
+}
+
+.help-item:hover {
+  background: #f8e6e9;
+}
+
+.wait {
+  flex: none;
+  color: var(--danger);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: 12px;
+}
+
 .row-actions {
   display: flex;
   align-items: center;
@@ -269,6 +322,29 @@ h2 {
 .btn.copied,
 .linkish.copied {
   color: var(--ok);
+}
+
+.volume {
+  display: grid;
+  gap: 4px;
+}
+
+.volume.off {
+  opacity: 0.45;
+}
+
+.volume .field {
+  margin: 0;
+}
+
+input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.volume .btn {
+  justify-self: start;
+  padding-left: 0;
 }
 
 input[type="text"],
